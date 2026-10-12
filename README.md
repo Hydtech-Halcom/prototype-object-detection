@@ -216,32 +216,10 @@ Continue
 
 # Scope
 
-Included:
+Core scope done. Full checklist with done/pending status: see [PLAN.md](PLAN.md).
 
-- RTSP streaming
-- Real-time YOLO inference
-- Person detection
-- Animal detection
-- Region monitoring
-- Desktop application
-- Event logging
-- ON/OFF monitoring
-
-Not included:
-
-- Face recognition
-- Person identification
-- Multi-person tracking
-- Behavior analysis
-- Eye tracking
-- Head pose estimation
-- Gaze estimation
-- Attention estimation
-- Deep learning beyond YOLO
-- Database
-- REST API
-- Cloud deployment
-- User authentication
+Included in PoC: RTSP streaming, realtime YOLO person detection,
+region monitoring, desktop app, event logging, ON/OFF monitoring.
 
 ---
 
@@ -256,21 +234,16 @@ Not included:
 
 ---
 
-# Proposed Project Structure
+# Project Structure
 
 ```
 prototype-object-detection/
 │
 ├── app/
 │   ├── main.py
-│   ├── ui.py
 │   ├── camera.py
 │   ├── detector.py
-│   ├── monitor.py
-│   ├── logger.py
-│   └── config.py
-│
-├── assets/
+│   └── monitor.py
 │
 ├── logs/
 │
@@ -279,25 +252,66 @@ prototype-object-detection/
 └── README.md
 ```
 
+Plan + status (done vs pending): see [PLAN.md](PLAN.md).
+
 ---
 
-# Future Improvements
+# How to Run with Docker
 
-Potential future enhancements include:
+GUI app, so the container must forward the host display. Camera URL passes via `RTSP_URL` env or CLI arg.
 
-- Multiple monitoring regions
-- Multi-person monitoring
-- Object tracking
-- Custom object selection
-- Adjustable monitoring margins
-- Alarm sound configuration
-- Screenshot on alert
-- Alert history
-- Video recording
-- Web dashboard
-- REST API
-- MQTT integration
-- AI-based focus detection
-- Head pose estimation
-- Eye gaze estimation
-- Exam violation detection
+Build once:
+
+```
+docker build -t poc-monitor .
+```
+
+## Linux
+
+Allow X access, then run with display socket:
+
+```
+xhost +local:docker
+docker run --rm \
+  -e DISPLAY=$DISPLAY \
+  -e RTSP_URL="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main" \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  poc-monitor
+```
+
+Override URL via arg instead of env:
+
+```
+docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  poc-monitor python -m app.main "rtsp://user:pass@host:554/path"
+```
+
+Revoke after test: `xhost -local:docker`.
+
+Wayland: run under XWayland (`QT_QPA_PLATFORM=xcb`, default in image) or set `QT_QPA_PLATFORM=wayland` plus Wayland socket mount.
+
+## Windows
+
+Docker Desktop cannot show Qt directly. Steps:
+
+1. Install VcXsrv, start with "Disable access control".
+2. Note host IP reachable from container (e.g. `192.168.1.2`).
+3. Run:
+
+```
+docker build -t poc-monitor .
+docker run --rm -e DISPLAY=192.168.1.2:0.0 -e LIBGL_ALWAYS_INDIRECT=1 -e RTSP_URL="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main" poc-monitor
+```
+
+Notes:
+
+- Camera must be reachable from container network. `192.168.x.x` works when Docker uses bridge/NAT on same LAN. No `localhost` camera URLs.
+- Headless test (no display) via YOLO CLI:
+
+```
+docker run --rm poc-monitor yolo predict model=yolov8n.pt source="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main"
+```
+
+---
+
+See [PLAN.md](PLAN.md) for future improvements + status.
