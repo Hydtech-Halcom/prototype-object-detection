@@ -248,6 +248,7 @@ prototype-object-detection/
 ├── logs/
 │
 ├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
 └── README.md
 ```
@@ -256,19 +257,34 @@ Plan + status (done vs pending): see [PLAN.md](PLAN.md).
 
 ---
 
-# How to Run with Docker
+# How to Run
 
-GUI app, so the container must forward the host display. Camera URL passes via `RTSP_URL` env or CLI arg.
+## Linux (compose, recommended)
 
-Build once:
+Just one command:
 
 ```
-docker build -t poc-monitor .
+xhost +local:docker
+docker compose up --build
 ```
 
-## Linux
+Override the camera URL without editing files:
 
-Allow X access, then run with display socket:
+```
+RTSP_URL="rtsp://user:pass@host:554/path" docker compose up --build
+```
+
+After testing, revoke X access: `xhost -local:docker`.
+
+Notes:
+
+- Default `RTSP_URL` lives in `docker-compose.yml` (falls back to the example IP when the env var is empty).
+- `network_mode: host` so a LAN camera (`192.168.x.x`) is directly reachable, no network setup needed.
+- Wayland: works on top of XWayland as-is (`QT_QPA_PLATFORM=xcb` is already the default in the image).
+
+## Manual `docker run` (without compose)
+
+Build once: `docker build -t poc-monitor .`, then:
 
 ```
 xhost +local:docker
@@ -279,16 +295,7 @@ docker run --rm \
   poc-monitor
 ```
 
-Override URL via arg instead of env:
-
-```
-docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-  poc-monitor python -m app.main "rtsp://user:pass@host:554/path"
-```
-
-Revoke after test: `xhost -local:docker`.
-
-Wayland: run under XWayland (`QT_QPA_PLATFORM=xcb`, default in image) or set `QT_QPA_PLATFORM=wayland` plus Wayland socket mount.
+Override URL via arg: `docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix poc-monitor python -m app.main "rtsp://user:pass@host:554/path"`.
 
 ## Windows
 
