@@ -30,28 +30,50 @@ def is_inside(center, rect):
 
 
 class RegionMonitor:
-    """One fixed region. ON = lock, OFF = clear."""
+    """Fixed regions, one per person. ON = lock all, OFF = clear."""
 
     def __init__(self, margin=MARGIN):
         self.margin = margin
-        self.region = None
+        self.regions = []
 
     @property
     def active(self):
-        return self.region is not None
+        return len(self.regions) > 0
+
+    @property
+    def region(self):
+        """First region (compat for single-person callers)."""
+        return self.regions[0] if self.regions else None
 
     def lock(self, box, fw=None, fh=None):
-        self.region = lock_region(box, self.margin, fw, fh)
-        return self.region
+        rect = lock_region(box, self.margin, fw, fh)
+        self.regions = [rect]
+        return rect
+
+    def lock_all(self, boxes, fw=None, fh=None):
+        self.regions = [lock_region(b, self.margin, fw, fh) for b in boxes]
+        return self.regions
 
     def clear(self):
-        self.region = None
+        self.regions = []
 
     def check_box(self, box):
         """True when box center is inside region. False when outside."""
-        if self.region is None:
+        if not self.regions:
             return True
-        return is_inside(center_of(box), self.region)
+        return is_inside(center_of(box), self.regions[0])
+
+    def check_all(self, boxes):
+        """Per-region bool. Region OK when >=1 person center inside.
+
+        # ponytail: no ID tracking, swap-proof only when regions disjoint.
+        # Add ByteTrack/SORT when identity must persist across overlap.
+        """
+        centers = [center_of(b) for b in boxes]
+        return [
+            any(is_inside(c, r) for c in centers) if centers else False
+            for r in self.regions
+        ]
 
 
 def demo():
@@ -59,6 +81,10 @@ def demo():
     m.lock((100, 100, 200, 200))
     assert m.check_box((110, 110, 190, 190)) is True
     assert m.check_box((300, 300, 350, 350)) is False
+    m.lock_all([(100, 100, 200, 200), (400, 400, 500, 500)])
+    assert m.check_all([(110, 110, 190, 190)]) == [True, False]
+    assert m.check_all([(110, 110, 190, 190), (410, 410, 490, 490)]) == [True, True]
+    assert m.check_all([]) == [False, False]
     m.clear()
     assert m.active is False
     print("monitor ok")

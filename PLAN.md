@@ -6,7 +6,8 @@ PoC status vs README scope. Checked = done, unchecked = pending/skipped.
 
 - [x] RTSP connect + auto-reconnect (`app/camera.py`)
 - [x] Realtime YOLO person detect (`app/detector.py`, `yolov8n.pt`)
-- [x] Lock monitoring region from biggest person box + margin (`app/monitor.py`)
+- [x] Lock monitoring regions, one per person + margin (`app/monitor.py`)
+- [x] Multi-person monitoring: ON locks all persons, per-region P1..Pn check, `LEFT (k/n)` alert
 - [x] Center-point inside check per frame
 - [x] Leave alert: red rect + `LEFT REGION` label + log
 - [x] ON/OFF toggle (OFF clears region + alert)
@@ -59,10 +60,10 @@ prototype-object-detection/
 Dropped from proposal: `ui.py` (merged into `main.py`), `logger.py` (stdlib),
 `config.py` (top-file constants), `assets/` (empty). Restore when each earns its file.
 
-## Future improvements (all pending)
+## Future improvements
 
-- [ ] Multiple monitoring regions
-- [ ] Multi-person monitoring
+- [x] Multiple monitoring regions (one per person, CCTV)
+- [x] Multi-person monitoring (no ID tracking; region OK when any person center inside)
 - [ ] Object tracking (ByteTrack/SORT)
 - [ ] Custom object selection
 - [ ] Adjustable margins in UI (now `MARGIN` constant)

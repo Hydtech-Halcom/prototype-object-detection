@@ -97,17 +97,18 @@ class MainWindow(QMainWindow):
         return self.detector
 
     def on_start(self):
-        box = Detector.biggest(self.last_boxes)
-        if box is None:
+        if not self.last_boxes:
             self.add_log("ON failed: no person in frame")
             self.status_lbl.setText("Status: OFF (no person)")
             return
         fw, fh = self.frame_size
-        rect = self.monitor.lock(box, fw, fh)
-        self.status_lbl.setText("Status: Monitoring ON")
+        rects = self.monitor.lock_all(self.last_boxes, fw, fh)
+        n = len(rects)
+        self._last_left = 0
+        self.status_lbl.setText(f"Status: Monitoring ON ({n})")
         self.alert_lbl.setText("Alert: inside")
-        self.add_log(f"lock region {rect}")
-        log.info("LOCK %s", rect)
+        self.add_log(f"locked {n} region(s)")
+        log.info("LOCK %s", rects)
 
     def on_stop(self):
         self.monitor.clear()
@@ -134,26 +135,29 @@ class MainWindow(QMainWindow):
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
 
         if self.monitor.active:
-            rx1, ry1, rx2, ry2 = self.monitor.region
-            box = Detector.biggest(boxes)
-            inside = self.monitor.check_box(box) if box else True
-            # missing from frame = treat as left (strict PoC rule)
-            if box is None:
-                inside = False
-            color = (0, 255, 0) if inside else (0, 0, 255)
-            cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), color, 2)
-            if not inside:
-                alert = True
-                cv2.putText(frame, "LEFT REGION", (rx1, max(0, ry1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                if self.alert_lbl.text() != "Alert: LEFT":
-                    self.add_log("ALERT: person left region")
-                    log.warning("ALERT left region")
-            self.alert_lbl.setText("Alert: LEFT" if alert else "Alert: inside")
+            inside_list = self.monitor.check_all(boxes)
+            left = sum(1 for v in inside_list if not v)
+            n = len(inside_list)
+            for i, (rect, inside) in enumerate(zip(self.monitor.regions, inside_list)):
+                rx1, ry1, rx2, ry2 = rect
+                color = (0, 255, 0) if inside else (0, 0, 255)
+                cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), color, 2)
+                cv2.putText(frame, f"P{i + 1}", (rx1, max(0, ry1 - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                if not inside:
+                    cv2.putText(frame, "LEFT", (rx1, ry2 + 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            alert = left > 0
+            if alert and left != getattr(self, "_last_left", 0):
+                self.add_log(f"ALERT: {left}/{n} person(s) left region")
+                log.warning("ALERT %d/%d left", left, n)
+            self._last_left = left
+            self.alert_lbl.setText(f"Alert: LEFT ({left}/{n})" if alert else "Alert: inside")
             self.alert_lbl.setStyleSheet(
                 "font-weight: bold; color: red;" if alert else "font-weight: bold; color: green;"
             )
-            self.status_lbl.setText("Status: ALERT" if alert else "Status: Monitoring ON")
+            self.status_lbl.setText(
+                f"Status: ALERT ({left}/{n})" if alert else f"Status: Monitoring ON ({n})")
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
