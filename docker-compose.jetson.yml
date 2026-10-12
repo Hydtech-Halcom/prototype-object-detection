@@ -1,0 +1,20 @@
+# Jetson Orin GPU overlay. Orin-only (needs the `nvidia` container runtime).
+#
+# The base docker-compose.yml stays portable (CPU). This file adds GPU
+# passthrough + 30 fps tuning on top of it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
+#
+# Requires (host, one time): ./scripts/jetson-power.sh
+services:
+  monitor:
+    runtime: nvidia
+    environment:
+      DISPLAY: ${DISPLAY}
+      RTSP_URL: ${RTSP_URL:-rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      # GPU does yolov8n/640 in ~18 ms; worker keeps newest frame so the
+      # pipeline tracks the source rate. YOLO_HALF=1 untested gain, keep 0.
+      YOLO_HALF: 0
+      # YOLO_IMGSZ: 480  # uncomment to trade resolution for rate

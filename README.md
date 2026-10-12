@@ -6,6 +6,98 @@ This project is intended as a **proof of concept (PoC)** for an exam monitoring 
 
 ---
 
+# Quick Start
+
+## Jetson Orin with GPU (primary, 25-30 fps path)
+
+Host setup, once per boot (locks Orin to max performance):
+
+```
+./scripts/jetson-power.sh
+```
+
+Run with GPU passthrough (needs the `nvidia` container runtime on the host):
+
+```
+xhost +local:docker
+docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
+```
+
+After testing, revoke X access: `xhost -local:docker`.
+
+## Any machine, CPU only (fallback, ~5-8 fps)
+
+```
+xhost +local:docker
+docker compose up --build
+```
+
+## Camera URL
+
+Override without editing files:
+
+```
+RTSP_URL="rtsp://user:pass@host:554/path" docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
+```
+
+Default `RTSP_URL` lives in `docker-compose.yml` (falls back to the example IP when the env var is empty).
+
+## Useful tuning (no rebuild needed)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `YOLO_IMGSZ` | `640` | e.g. `480` trades resolution for inference rate |
+| `YOLO_HALF` | `0` | `1` enables FP16 (measured no gain at this size) |
+| `YOLO_DEVICE` | auto | `cuda:0` when a GPU is visible, else `cpu` |
+
+Example:
+
+```
+YOLO_IMGSZ=480 docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
+```
+
+## Health
+
+Watch the pipeline in `logs/app.log` — every 5 s it prints:
+
+```
+stats seen=<frames from camera> inferred=<YOLO runs> dropped=<skipped> infer_ms=<ms per run>
+```
+
+Healthy GPU run: `inferred` tracks `seen` 1:1, `infer_ms` ~20-60, memory flat (~1.3 GiB). If `dropped` climbs, inference is slower than the camera rate — lower `YOLO_IMGSZ` or the camera frame rate.
+
+Note: the frame rate can never exceed what the camera sends. If `seen` grows slower than expected (e.g. ~15/s), raise the frame rate in the camera's own encoding settings.
+
+---
+
+# Current System
+
+Three threads, each with one job:
+
+```
+RTSP camera
+    │
+    ▼
+CameraWorker (capture thread) ── raw frames, TCP + low-delay FFmpeg,
+    │                              1-frame buffer, auto-reconnect
+    ▼
+InferenceWorker (GPU/CPU thread) ─ YOLO person detect, latest-only slot:
+    │                              newest frame overwrites a pending one,
+    │                              GUI never blocks on inference
+    ▼
+MainWindow (GUI thread) ───────── renders live video + boxes + regions,
+                                   ON/OFF locking, leave-region alerts,
+                                   event log panel
+```
+
+* **Capture** (`app/camera.py`): `cv2.VideoCapture` with `rtsp_transport=tcp`, `nobuffer`/`low_delay`, buffer size 1, 2 s reconnect backoff.
+* **Inference** (`app/detector.py` + worker in `app/main.py`): Ultralytics YOLOv8n, person class only, `imgsz` 640 default, model warmup at startup (pays GPU JIT cost once), results delivered via Qt signal.
+* **Monitoring** (`app/monitor.py`, pure logic, no Qt/cv2): ON locks one region per detected person (box + margin); each frame checks person centers against regions; leaving triggers red highlight + `LEFT` label + log + alert panel.
+* **Deployment**: `Dockerfile` (portable CPU image) + `docker-compose.yml` (portable) + `docker-compose.jetson.yml` (Orin overlay: `runtime: nvidia`, GPU env). `network_mode: host` so a LAN camera (`192.168.x.x`) is directly reachable. Logs go to `logs/app.log` (bind-mounted) and the UI panel.
+* **Requirements**: `requirements.txt` (CPU/portable). OpenCV is the headless build — the GUI is PySide6 only, which avoids a bundled-Qt conflict. Full history of production fixes: see `CHANGELOG.md`.
+
+---
+
 # Project Goal
 
 Develop a lightweight desktop application that:
@@ -247,9 +339,14 @@ prototype-object-detection/
 │
 ├── logs/
 │
+├── scripts/
+│   └── jetson-power.sh   # host: lock Orin to max performance
+│
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml          # portable (CPU)
+├── docker-compose.jetson.yml   # Orin overlay (GPU passthrough)
 ├── requirements.txt
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -258,6 +355,9 @@ Plan + status (done vs pending): see [PLAN.md](PLAN.md).
 ---
 
 # How to Run
+
+See [Quick Start](#quick-start) at the top for the recommended commands
+(GPU on Jetson Orin, or CPU fallback).
 
 ## Linux (compose, recommended)
 
@@ -282,6 +382,22 @@ Notes:
 - `network_mode: host` so a LAN camera (`192.168.x.x`) is directly reachable, no network setup needed.
 - Wayland: works on top of XWayland as-is (`QT_QPA_PLATFORM=xcb` is already the default in the image).
 
+## Jetson Orin with GPU
+
+Same as above but with the GPU overlay (see [Quick Start](#quick-start)):
+
+```
+./scripts/jetson-power.sh   # host, once per boot
+xhost +local:docker
+docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
+```
+
+Requires the `nvidia` container runtime on the host. Check GPU visibility with:
+
+```
+docker run --rm --runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all poc-monitor python -c "import torch; print(torch.cuda.is_available())"
+```
+
 ## Manual `docker run` (without compose)
 
 Build once: `docker build -t poc-monitor .`, then:
@@ -294,6 +410,8 @@ docker run --rm \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   poc-monitor
 ```
+
+With GPU on Jetson, add `--runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`.
 
 Override URL via arg: `docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix poc-monitor python -m app.main "rtsp://user:pass@host:554/path"`.
 

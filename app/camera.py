@@ -1,7 +1,15 @@
 """RTSP capture in QThread. Emits raw frames, simple reconnect."""
 
+import os
+
 import cv2
 from PySide6.QtCore import QThread, Signal
+
+# Low-latency FFmpeg RTSP options. Set before VideoCapture opens the stream.
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay",
+)
 
 
 class CameraWorker(QThread):
@@ -27,13 +35,17 @@ class CameraWorker(QThread):
                 self.msleep(2000)
                 continue
             self.status.emit("connected")
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             while self._run:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     self.status.emit("frame lost, reconnecting")
                     break
                 self.frame_ready.emit(frame)
-                self.msleep(15)
+                self.msleep(33)
             cap.release()
             if self._run:
                 self.msleep(2000)
