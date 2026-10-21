@@ -46,7 +46,8 @@ Default `RTSP_URL` lives in `docker-compose.yml` (falls back to the example IP w
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `YOLO_IMGSZ` | `640` | e.g. `480` trades resolution for inference rate |
+| `YOLO_IMGSZ` | auto | set e.g. `480` to pin; unset = auto tier (high 640 / med 480 / low 320+stride) |
+| `YOLO_MODEL` | `yolo11n.pt` | `.onnx` sibling preferred on Windows (DirectML GPU when present, else CPU) |
 | `YOLO_HALF` | `0` | `1` enables FP16 (measured no gain at this size) |
 | `YOLO_DEVICE` | auto | `cuda:0` when a GPU is visible, else `cpu` |
 
@@ -427,6 +428,17 @@ Docker Desktop cannot show Qt directly. Steps:
 docker build -t poc-monitor .
 docker run --rm -e DISPLAY=192.168.1.2:0.0 -e LIBGL_ALWAYS_INDIRECT=1 -e RTSP_URL="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main" poc-monitor
 ```
+
+## Windows `.exe` (one build for light and high-end PCs)
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/build_exe.ps1
+```
+
+Zip `dist/ExamMonitor/` for target PCs (Win 10/11 x64, GPU driver up to date).
+Startup auto-tiers: bench once → high (640/every frame) / med (480) / low
+(320 + infer every 2nd-3rd frame, adapts via `dropped` in `logs/app.log`).
+`.onnx` runs on DirectML GPU when present, else CPU — no CUDA Toolkit needed.
 
 Notes:
 

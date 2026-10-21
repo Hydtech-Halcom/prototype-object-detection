@@ -2,5 +2,9 @@
 __pycache__/
 *.pyc
 *.pt
+*.onnx
+build/
+dist/
+*.spec
 logs/*.log
 .DS_Store

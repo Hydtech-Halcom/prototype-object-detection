@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased - Fix frozen fork-bomb (exe opened dozens of windows)
+
+* Root cause: ultralytics `check_requirements` saw no pip metadata in the
+  bundle and ran `[sys.executable, "-m", "pip", ...]` — in the exe that is
+  `ExamMonitor.exe` itself, so every child opened a new app window with URL
+  `-m` and spawned again (49 processes, `connect -m` in log).
+* `app/main.py`: `ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS=1` when frozen,
+  `argv[1]` starting with `-` ignored, `freeze_support()` + `QLockFile`
+  single-instance guard. Verified: 1 process, zero `connect -m`.
+* Root cause of `inferred=0` in exe was NOT a hang: missing `torchvision`
+  native ops in the bundle (`torchvision::nms does not exist`) killed the
+  worker thread silently after `warming up...`. Fix: `--collect-all
+  torchvision` in `scripts/build_exe.ps1` + try/except around load/warmup
+  with status errors. Verified frozen: `warmup done`, `tier: high
+  (640)`, `YOLO onnx-dml`, `infer_ms ~50`. Bisect probes removed.
+
+## Unreleased - Adaptive Windows build (1 exe, light to high-end)
+
+* `yolov8n.pt` -> `yolo11n.pt` default (same API, ~30% faster CPU, +2 mAP).
+  `.onnx` export runs on DirectML GPU when present else CPU (no torch-CUDA
+  bloat); explicit `YOLO_MODEL`/`.pt` still wins (Jetson/docker unchanged).
+* `app/main.py`: startup bench auto-tier (high 640 / med 480 / low 320 +
+  stride 2-3 with hysteresis on `dropped`); `YOLO_IMGSZ` set pins manual.
+  No motion-gate (exam sitter is static — stride only).
+* `scripts/build_exe.ps1` (new): PyInstaller `--onedir` + headless cv2 +
+  bundled `yolo11n.onnx`. Verified headless: `tier: med (imgsz=480,
+  stride=1)`, `YOLO onnx-dml on cpu` on Ryzen 5 5500U.
+
 ## Unreleased - GPU on Orin + worker-thread inference (25-30fps path)
 
 ### Findings (measured, not assumed)

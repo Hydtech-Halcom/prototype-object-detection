@@ -6,6 +6,12 @@ import sys
 import time
 from pathlib import Path
 
+if getattr(sys, "frozen", False):
+    # ponytail: frozen exe has no pip metadata; ultralytics would treat deps
+    # as missing and relaunch [exe, "-m", "pip", ...] -> fork bomb. Skip it:
+    # everything is already bundled by PyInstaller.
+    os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
+
 import cv2
 from PySide6.QtCore import (
     Qt,
@@ -35,10 +41,21 @@ RTSP_URL = "rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main"
 MARGIN = 40
 # Inference runs in InferenceWorker (below), not the GUI thread. Render stays
 # in on_frame so video is live even while the worker is busy.
-IMGSZ = int(os.getenv("YOLO_IMGSZ", "640"))
+# YOLO_IMGSZ set -> manual (wins). Unset -> auto tier from startup bench.
+_IMGSZ_ENV = os.getenv("YOLO_IMGSZ")
+IMGSZ = int(_IMGSZ_ENV) if _IMGSZ_ENV else 0  # 0 = auto
 TORCH_THREADS = 2
 YOLO_DEVICE = os.getenv("YOLO_DEVICE")  # None = auto (cuda:0 when available)
 YOLO_HALF = os.getenv("YOLO_HALF", "0") == "1"
+
+
+def pick_tier(bench_ms):
+    """Map startup bench to (imgsz, stride). Stride N = infer every Nth frame."""
+    if bench_ms < 50:
+        return ("high", 640, 1)
+    if bench_ms < 150:
+        return ("med", 480, 1)
+    return ("low", 320, 2)  # ponytail: stride, not motion-gate (sitter is static)
 
 try:
     import torch
@@ -47,11 +64,16 @@ try:
 except Exception:
     pass
 
+# ponytail: exe/dist has no logs/ dir; cwd may differ when launched via
+# shortcut, so anchor logs to the exe dir when frozen, repo root otherwise.
+_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd()
+(_BASE / "logs").mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler("logs/app.log", encoding="utf-8"),
+        logging.FileHandler(_BASE / "logs" / "app.log", encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
@@ -64,6 +86,7 @@ class InferenceWorker(QThread):
 
     result_ready = Signal(list, float)  # boxes, infer_ms
     status = Signal(str)
+    tier_ready = Signal(str, int, int)  # tier, imgsz, stride
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,11 +112,36 @@ class InferenceWorker(QThread):
         self.wait(5000)
 
     def run(self):
-        self.status.emit("loading YOLOv8n...")
-        det = Detector(device=YOLO_DEVICE, half=YOLO_HALF, imgsz=IMGSZ)
-        self.status.emit(f"YOLO on {det.device} (half={det.half}, imgsz={IMGSZ})")
+        from app.detector import quick_bench
+
+        self.status.emit("loading model...")
+        t0 = time.monotonic()
+        try:
+            det = Detector(device=YOLO_DEVICE, half=YOLO_HALF, imgsz=IMGSZ or 480)
+        except Exception as e:
+            self.status.emit(f"model load failed: {e}")
+            log.exception("model load failed")
+            return
+        log.info("model loaded in %.1fs", time.monotonic() - t0)
         self.status.emit("warming up...")
-        det.warmup()
+        t0 = time.monotonic()
+        try:
+            det.warmup()
+        except Exception as e:
+            # ponytail: never die silently (frozen NMS/thread issues hide here)
+            self.status.emit(f"warmup failed: {e}")
+            log.exception("warmup failed")
+            return
+        log.info("warmup done in %.1fs", time.monotonic() - t0)
+        det.enable_dml()  # predictor exists now; no-op for .pt/CPU-only
+        if IMGSZ:
+            tier, imgsz, stride = "manual", IMGSZ, 1
+        else:
+            ms = quick_bench(det)  # at 480 probe size
+            tier, imgsz, stride = pick_tier(ms)
+            det.imgsz = imgsz
+        self.tier_ready.emit(tier, det.imgsz, stride)
+        self.status.emit(f"YOLO {det.backend} on {det.device} ({tier}, imgsz={det.imgsz}, stride={stride})")
         self.status.emit("YOLO ready")
         while True:
             self._mutex.lock()
@@ -171,10 +219,22 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
         # Inference in background thread from the start; UI shows immediately.
+        self.stride = 1
+        self._tier_seen = False
+        self._up_windows = 0
+        self._down_windows = 0
+        self._last_dropped = 0
+        self._last_inferred = 0
         self.infer_worker = InferenceWorker()
         self.infer_worker.result_ready.connect(self._on_result)
         self.infer_worker.status.connect(self.add_log)
+        self.infer_worker.tier_ready.connect(self._on_tier)
         self.infer_worker.start()
+
+    def _on_tier(self, tier, imgsz, stride):
+        self.stride = stride
+        self._tier_seen = True
+        self.add_log(f"tier: {tier} (imgsz={imgsz}, stride={stride})")
 
     def add_log(self, msg):
         log.info(msg)
@@ -207,19 +267,48 @@ class MainWindow(QMainWindow):
         self._frames_seen += 1
         now = time.monotonic()
 
-        self.infer_worker.try_submit(frame)
+        if self._frames_seen % self.stride == 0:
+            self.infer_worker.try_submit(frame)
         self._render(frame, self.last_boxes)
 
         # Periodic stats so slowdowns are diagnosable from logs/app.log
         if now - self._last_stats_t >= 5.0:
             log.info(
-                "stats seen=%d inferred=%d dropped=%d infer_ms=%.0f",
+                "stats seen=%d inferred=%d dropped=%d infer_ms=%.0f stride=%d",
                 self._frames_seen,
                 self.infer_worker.inferred,
                 self.infer_worker.dropped,
                 self._infer_ms,
+                self.stride,
             )
+            self._adapt_stride()
             self._last_stats_t = now
+
+    def _adapt_stride(self):
+        """Hysteresis on drops/window: 1 bad window steps down (max 3),
+        3 clean windows step back up. ponytail: stride only, never reload."""
+        if not self._tier_seen:  # worker still in warmup; nothing to judge yet
+            return
+        dropped = self.infer_worker.dropped - self._last_dropped
+        inferred = self.infer_worker.inferred - self._last_inferred
+        self._last_dropped = self.infer_worker.dropped
+        self._last_inferred = self.infer_worker.inferred
+        if dropped > max(1, inferred):  # more overwritten than processed
+            self._down_windows += 1
+            self._up_windows = 0
+        elif inferred > 0:
+            self._up_windows += 1
+            self._down_windows = 0
+        else:
+            return
+        if self._down_windows >= 1 and self.stride < 3:
+            self.stride += 1
+            self._down_windows = 0
+            log.info("stride -> %d (shedding load)", self.stride)
+        elif self._up_windows >= 3 and self.stride > 1:
+            self.stride -= 1
+            self._up_windows = 0
+            log.info("stride -> %d (headroom back)", self.stride)
 
     def _on_result(self, boxes, infer_ms):
         """Runs in GUI thread when the worker finishes one inference."""
@@ -270,8 +359,25 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def _cli_url():
+    """argv[1] wins unless it looks like a flag (stray spawn) -> env/default."""
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+        return sys.argv[1]
+    return os.getenv("RTSP_URL", RTSP_URL)
+
+
 def main():
-    url = sys.argv[1] if len(sys.argv) > 1 else os.getenv("RTSP_URL", RTSP_URL)
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # no-op except frozen multiprocessing
+    from PySide6.QtCore import QLockFile
+
+    lock = QLockFile(str(_BASE / "ExamMonitor.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(100):
+        print("ExamMonitor already running.")
+        return
+    url = _cli_url()
     app = QApplication(sys.argv)
     win = MainWindow(url)
     win.show()
