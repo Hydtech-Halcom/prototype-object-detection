@@ -1,454 +1,212 @@
-# Prototype Object Detection
+# AI: Visual Inspection — Training Practicum
 
-A minimal desktop application that demonstrates real-time object detection and region monitoring using an RTSP IP Camera and YOLO.
+Hands-on code for the training **"Implementing an AI Vision System for Production Lines"**:
+object detection and behavioral detection with Roboflow, Google Colab and YOLO, deployed
+on-premise with an RTX workstation and four IP cameras.
 
-This project is intended as a **proof of concept (PoC)** for an exam monitoring system. Instead of implementing complex behavior analysis or attention detection models, the prototype monitors whether a detected person remains inside a predefined monitoring area.
-
----
-
-# Quick Start
-
-## Jetson Orin with GPU (primary, 25-30 fps path)
-
-Host setup, once per boot (locks Orin to max performance):
-
-```
-./scripts/jetson-power.sh
-```
-
-Run with GPU passthrough (needs the `nvidia` container runtime on the host):
-
-```
-xhost +local:docker
-docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
-```
-
-After testing, revoke X access: `xhost -local:docker`.
-
-## Any machine, CPU only (fallback, ~5-8 fps)
-
-```
-xhost +local:docker
-docker compose up --build
-```
-
-## Camera URL
-
-Override without editing files:
-
-```
-RTSP_URL="rtsp://user:pass@host:554/path" docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
-```
-
-Default `RTSP_URL` lives in `docker-compose.yml` (falls back to the example IP when the env var is empty).
-
-## Useful tuning (no rebuild needed)
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `YOLO_IMGSZ` | auto | set e.g. `480` to pin; unset = auto tier (high 640 / med 480 / low 320+stride) |
-| `YOLO_MODEL` | `yolo11n.pt` | `.onnx` sibling preferred on Windows (DirectML GPU when present, else CPU) |
-| `YOLO_HALF` | `0` | `1` enables FP16 (measured no gain at this size) |
-| `YOLO_DEVICE` | auto | `cuda:0` when a GPU is visible, else `cpu` |
-
-Example:
-
-```
-YOLO_IMGSZ=480 docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
-```
-
-## Health
-
-Watch the pipeline in `logs/app.log` — every 5 s it prints:
-
-```
-stats seen=<frames from camera> inferred=<YOLO runs> dropped=<skipped> infer_ms=<ms per run>
-```
-
-Healthy GPU run: `inferred` tracks `seen` 1:1, `infer_ms` ~20-60, memory flat (~1.3 GiB). If `dropped` climbs, inference is slower than the camera rate — lower `YOLO_IMGSZ` or the camera frame rate.
-
-Note: the frame rate can never exceed what the camera sends. If `seen` grows slower than expected (e.g. ~15/s), raise the frame rate in the camera's own encoding settings.
+Every exercise is one short file that runs on the **laptop webcam**. To use an IP camera
+instead, change the camera source to an RTSP address, for example
+`"rtsp://user:password@192.168.1.10:554/stream"`.
 
 ---
 
-# Current System
+## Files
 
-Three threads, each with one job:
-
-```
-RTSP camera
-    │
-    ▼
-CameraWorker (capture thread) ── raw frames, TCP + low-delay FFmpeg,
-    │                              1-frame buffer, auto-reconnect
-    ▼
-InferenceWorker (GPU/CPU thread) ─ YOLO person detect, latest-only slot:
-    │                              newest frame overwrites a pending one,
-    │                              GUI never blocks on inference
-    ▼
-MainWindow (GUI thread) ───────── renders live video + boxes + regions,
-                                   ON/OFF locking, leave-region alerts,
-                                   event log panel
-```
-
-* **Capture** (`app/camera.py`): `cv2.VideoCapture` with `rtsp_transport=tcp`, `nobuffer`/`low_delay`, buffer size 1, 2 s reconnect backoff.
-* **Inference** (`app/detector.py` + worker in `app/main.py`): Ultralytics YOLOv8n, person class only, `imgsz` 640 default, model warmup at startup (pays GPU JIT cost once), results delivered via Qt signal.
-* **Monitoring** (`app/monitor.py`, pure logic, no Qt/cv2): ON locks one region per detected person (box + margin); each frame checks person centers against regions; leaving triggers red highlight + `LEFT` label + log + alert panel.
-* **Deployment**: `Dockerfile` (portable CPU image) + `docker-compose.yml` (portable) + `docker-compose.jetson.yml` (Orin overlay: `runtime: nvidia`, GPU env). `network_mode: host` so a LAN camera (`192.168.x.x`) is directly reachable. Logs go to `logs/app.log` (bind-mounted) and the UI panel.
-* **Requirements**: `requirements.txt` (CPU/portable). OpenCV is the headless build — the GUI is PySide6 only, which avoids a bundled-Qt conflict. Full history of production fixes: see `CHANGELOG.md`.
+| Module | File | What it does |
+|---|---|---|
+| 1 | `m1_image_processing.py` | Webcam / RTSP, FPS, resize, grayscale, HSV, blur, threshold, Canny, ROI snapshot |
+| 2 | `m2_collect_images.py` | Saves one image every 2 seconds into `dataset/` for Roboflow |
+| 3 | `m3_train_yolo.ipynb` | Google Colab: download the Roboflow dataset, train YOLO, evaluate, download `best.pt` |
+| 3 | `visual_inspection.py` | Real-time object detection on the webcam |
+| 4 | `m4_behavior.py` | Person tracking + rules: red zone > 3 s, left workstation > 30 s |
+| 5 | `m5_schema.sql` | The five PostgreSQL tables |
+| 5 | `m5_save_events.py` | Saves detections to PostgreSQL once per second |
+| 5 | `docker-compose.yml` | PostgreSQL + Grafana, restart 24/7 |
+| – | `yolo11n.pt` | Pretrained YOLO model (80 everyday classes), used until you have `best.pt` |
 
 ---
 
-# Project Goal
+## Preparation
 
-Develop a lightweight desktop application that:
+**Participant laptop:** Intel Core i5 Gen 12, 16 GB RAM, 512 GB SSD, Windows 11 Pro
+(recommended: Core i7 / Ryzen 7, 32 GB RAM, 1 TB SSD).
 
-- Connects to an RTSP IP Camera.
-- Detects objects using YOLO.
-- Focuses primarily on detecting people.
-- Allows the user to lock a monitoring region.
-- Alerts when the monitored person leaves that region.
-- Demonstrates the core monitoring workflow without requiring additional machine learning models.
+**Accounts:** Gmail, Google Drive, GitHub, Roboflow (Free or Pro), Docker Hub.
 
-This project prioritizes simplicity, maintainability, and fast prototyping.
+**Software:** Visual Studio Code, Git, Python 3.11, Docker Desktop, PostgreSQL, DBeaver,
+latest Chrome or Edge.
+
+**Python libraries:**
+
+```
+pip install ultralytics opencv-python "psycopg[binary]"
+```
+
+Each program opens a window. Press **Q** to close it.
 
 ---
 
-# Technology Stack
+## Module 1 — AI Vision Fundamentals & Image Processing (1 day)
 
-| Component | Technology |
-|-----------|------------|
-| Programming Language | Python |
-| Desktop UI | PySide6 |
-| Computer Vision | OpenCV |
-| Object Detection | Ultralytics YOLO |
-| Video Source | RTSP IP Camera |
-| Containerization | Docker (optional for deployment) |
+```
+python m1_image_processing.py
+```
+
+Opens four windows: Original (with FPS), HSV, Threshold and Edges.
+Press **S** to save a cropped region of interest as `snapshot_roi.jpg`.
+
+Concepts: frames, resolution and aspect ratio, color spaces (BGR, RGB, HSV, grayscale),
+resize, crop, blur, thresholding, Canny edge detection, FPS, RTSP streams.
 
 ---
 
-# Main Features
+## Module 2 — Data Collection & Dataset Management (2 days)
 
-## 1. Real-Time Object Detection
+### Collect images
 
-- Connect to an RTSP camera.
-- Detect objects in real time.
-- Prioritize detection of:
-    - person
-    - common animals (supported by YOLO COCO)
+```
+python m2_collect_images.py
+```
+
+Saves one frame every 2 seconds into `dataset/` until 1,000 images (change `INTERVAL`
+and `TARGET` at the top of the file). Collect in production conditions: fixed or moving
+camera, all lighting situations, the real background and angle, good and defective parts.
+Target: 1,000–5,000 images from all four cameras.
+
+### Prepare the dataset in Roboflow
+
+1. Create the workspace **ProductionAI** and an **Object Detection** project.
+2. Upload the `dataset/` folder.
+3. Label with boxes: **Defect, Good, Component, Helmet**.
+4. Split: **Train 70% · Validation 20% · Test 10%**.
+5. Augment: rotation, flip, brightness, blur, noise, crop.
+6. Generate a version, export in **YOLO** format, copy the download code.
 
 ---
 
-## 2. Region Monitoring
+## Module 3 — YOLO Training & Model Optimization (1 day)
 
-The user can enable monitoring mode.
+### Train in Google Colab
 
-When monitoring starts:
+1. Open `m3_train_yolo.ipynb` in Google Colab.
+2. Runtime → Change runtime type → **T4 GPU**.
+3. In cell 3, paste your Roboflow API key, workspace and project name (from the Export page).
+4. Run all cells. The last cell downloads **`best.pt`**.
 
-1. Detect the selected person.
-2. Capture the person's current position.
-3. Expand the detected bounding box with configurable margins.
-4. Store this expanded rectangle as a fixed monitoring region.
+Evaluation: mAP50, mAP50-95, precision, recall, IoU, false positives / false negatives.
+**Target: mAP above 90%.** If it is not reached, tune epochs, image size or model size
+(`yolo11n.pt` → `yolo11s.pt`), improve the data, and retrain.
 
-Example:
+### Real-time detection
 
 ```
-+--------------------------------------+
-|                                      |
-|        Monitoring Region             |
-|                                      |
-|      +---------------+               |
-|      |    Person     |               |
-|      +---------------+               |
-|                                      |
-+--------------------------------------+
+python visual_inspection.py
 ```
+
+Shows boxes, class names, confidence and an object counter. To use your own model,
+copy `best.pt` into this folder and change one line:
+
+```python
+model = YOLO("best.pt")
+```
+
+Try `conf=0.25`, `0.5` and `0.8` to see the precision / recall trade-off.
 
 ---
 
-## 3. Leave Region Alert
+## Module 4 — Behavioral Detection & Multi-Camera Processing (1 day)
 
-While monitoring is active:
+```
+python m4_behavior.py
+```
 
-- Detect the person's position every frame.
-- Calculate the center point of the detected person.
-- Check whether the center remains inside the monitoring region.
+Behavioral detection = YOLO person detection + tracking (stable ID) + rules.
 
-If the center leaves the region:
+| Rule | Condition | State |
+|---|---|---|
+| Area intrusion | Person center in the red zone (right side of the image) | WARNING, then VIOLATION after 3 s |
+| Leaving workstation | No person in view | VIOLATION after 30 s |
+| No helmet (task) | No `Helmet` box for 5 consecutive frames (needs `best.pt`) | VIOLATION |
 
-- Display an alert.
-- Highlight the monitoring region in red.
-- Write an event to the log.
+Change `RED_ZONE = (x1, y1, x2, y2)` to move the forbidden area.
+
+**Multi-camera:** one reader thread per camera (Camera_01–Camera_04 over RTSP), keep only
+the newest frame (frame skipping), and send all frames to the GPU in one batch
+(`model(list_of_frames)`).
 
 ---
 
-## 4. Monitoring Toggle
+## Module 5 — Database, Dashboard & Production Deployment (1 day)
 
-### OFF
+### 1. Start PostgreSQL and Grafana
 
-- Monitoring disabled.
-- Monitoring region removed.
-- Alerts cleared.
+```
+docker compose up -d
+```
 
-### ON
+PostgreSQL creates the tables from `m5_schema.sql` on first start:
+`camera_status`, `detection_event`, `behavior_event`, `system_alarm`, `user_login`.
+`restart: always` brings the services back after a crash or reboot.
 
-- Monitoring region created.
-- Monitoring starts.
-- Alerts become active.
+| Service | Address | Login |
+|---|---|---|
+| PostgreSQL | `localhost:5432`, database `production_ai` | `ai` / `ai123` |
+| Grafana | http://localhost:3000 | `admin` / `admin` |
+
+### 2. Save detections
+
+```
+python m5_save_events.py
+```
+
+Check the rows in DBeaver: `SELECT * FROM detection_event ORDER BY id DESC;`
+
+### 3. Grafana dashboard
+
+Add a data source: PostgreSQL, host `postgres:5432`, database `production_ai`,
+user `ai`, password `ai123`, SSL disabled. Example panel:
+
+```sql
+SELECT class_name, count(*) FROM detection_event GROUP BY class_name;
+```
+
+Dashboard metrics: detection count, alarm count, violation count, camera health, GPU usage.
+Optional notification service: email, Telegram or WhatsApp gateway for critical events.
+
+### Production architecture
+
+```
+4 IP cameras (RTSP) → AI Engine (YOLO + behavior rules) → PostgreSQL → Grafana + alarms
+```
+
+In production the AI engine runs as a third Docker container on the RTX workstation.
 
 ---
 
-# User Workflow
+## Production rollout
 
-```
-Launch Application
-        │
-        ▼
-Connect RTSP Camera
-        │
-        ▼
-YOLO detects person
-        │
-        ▼
-User presses ON
-        │
-        ▼
-Create Monitoring Region
-        │
-        ▼
-Person stays inside
-        │
-        ▼
-Normal
-```
+| Phase | Scope | Duration |
+|---|---|---|
+| 1 — Proof of Concept | One camera, one object model | 2–4 weeks |
+| 2 — Pilot Project | Two cameras, object + behavioral detection | 4–6 weeks |
+| 3 — Production Rollout | Four cameras 24/7, Grafana, database logging, alarms | 6–8 weeks |
 
-If the person exits:
+## Final deliverables
 
-```
-Monitoring
-      │
-      ▼
-Person leaves region
-      │
-      ▼
-Alert
-      │
-      ▼
-Continue monitoring
-```
+- **AI models:** one YOLO object-detection model, one behavioral-detection model.
+- **Dataset and training:** versioned Roboflow dataset with augmentation, Colab notebook,
+  training script, evaluation report.
+- **Production system:** RTX AI workstation, four IP cameras, PostgreSQL, Grafana, Docker.
+- **Documentation:** architecture, installation guide, operation manual, maintenance
+  procedure, troubleshooting guide.
 
 ---
 
-# Desktop UI
+## Troubleshooting
 
-The desktop application should provide:
-
-- Live camera feed
-- Bounding boxes
-- Monitoring region overlay
-- Monitoring ON/OFF button
-- Current monitoring status
-- Alert notification
-- Event log panel
-
-Example layout:
-
-```
-+------------------------------------------------------+
-| Live Camera                                          |
-|                                                      |
-|  [ Monitoring Region ]                              |
-|                                                      |
-+------------------------------------------------------+
-
-Status : Monitoring ON
-
-Alert  : Person inside region
-
-[ ON ]      [ OFF ]
-```
-
-When the monitored person leaves:
-
-```
-Status : ALERT
-
-Person left monitoring region.
-```
-
----
-
-# Detection Logic
-
-```
-RTSP Camera
-      │
-      ▼
-OpenCV
-      │
-      ▼
-YOLO Detection
-      │
-      ▼
-Calculate Person Center
-      │
-      ▼
-Inside Monitoring Region?
-      │
- ┌────┴────┐
- │         │
-YES       NO
- │         │
- │      Show Alert
- │      Write Log
- │
-Continue
-```
-
----
-
-# Scope
-
-Core scope done. Full checklist with done/pending status: see [PLAN.md](PLAN.md).
-
-Included in PoC: RTSP streaming, realtime YOLO person detection,
-region monitoring, desktop app, event logging, ON/OFF monitoring.
-
----
-
-# Design Principles
-
-- Keep the architecture minimal.
-- Avoid unnecessary dependencies.
-- Avoid overengineering.
-- Prefer readability over optimization.
-- Focus on demonstrating the monitoring concept.
-- Build components that can be extended later.
-
----
-
-# Project Structure
-
-```
-prototype-object-detection/
-│
-├── app/
-│   ├── main.py
-│   ├── camera.py
-│   ├── detector.py
-│   └── monitor.py
-│
-├── logs/
-│
-├── scripts/
-│   └── jetson-power.sh   # host: lock Orin to max performance
-│
-├── Dockerfile
-├── docker-compose.yml          # portable (CPU)
-├── docker-compose.jetson.yml   # Orin overlay (GPU passthrough)
-├── requirements.txt
-├── CHANGELOG.md
-└── README.md
-```
-
-Plan + status (done vs pending): see [PLAN.md](PLAN.md).
-
----
-
-# How to Run
-
-See [Quick Start](#quick-start) at the top for the recommended commands
-(GPU on Jetson Orin, or CPU fallback).
-
-## Linux (compose, recommended)
-
-Just one command:
-
-```
-xhost +local:docker
-docker compose up --build
-```
-
-Override the camera URL without editing files:
-
-```
-RTSP_URL="rtsp://user:pass@host:554/path" docker compose up --build
-```
-
-After testing, revoke X access: `xhost -local:docker`.
-
-Notes:
-
-- Default `RTSP_URL` lives in `docker-compose.yml` (falls back to the example IP when the env var is empty).
-- `network_mode: host` so a LAN camera (`192.168.x.x`) is directly reachable, no network setup needed.
-- Wayland: works on top of XWayland as-is (`QT_QPA_PLATFORM=xcb` is already the default in the image).
-
-## Jetson Orin with GPU
-
-Same as above but with the GPU overlay (see [Quick Start](#quick-start)):
-
-```
-./scripts/jetson-power.sh   # host, once per boot
-xhost +local:docker
-docker compose -f docker-compose.yml -f docker-compose.jetson.yml up --build
-```
-
-Requires the `nvidia` container runtime on the host. Check GPU visibility with:
-
-```
-docker run --rm --runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all poc-monitor python -c "import torch; print(torch.cuda.is_available())"
-```
-
-## Manual `docker run` (without compose)
-
-Build once: `docker build -t poc-monitor .`, then:
-
-```
-xhost +local:docker
-docker run --rm \
-  -e DISPLAY=$DISPLAY \
-  -e RTSP_URL="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main" \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  poc-monitor
-```
-
-With GPU on Jetson, add `--runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`.
-
-Override URL via arg: `docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix poc-monitor python -m app.main "rtsp://user:pass@host:554/path"`.
-
-## Windows
-
-Docker Desktop cannot show Qt directly. Steps:
-
-1. Install VcXsrv, start with "Disable access control".
-2. Note host IP reachable from container (e.g. `192.168.1.2`).
-3. Run:
-
-```
-docker build -t poc-monitor .
-docker run --rm -e DISPLAY=192.168.1.2:0.0 -e LIBGL_ALWAYS_INDIRECT=1 -e RTSP_URL="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main" poc-monitor
-```
-
-## Windows `.exe` (one build for light and high-end PCs)
-
-```
-powershell -ExecutionPolicy Bypass -File scripts/build_exe.ps1
-```
-
-Zip `dist/ExamMonitor/` for target PCs (Win 10/11 x64, GPU driver up to date).
-Startup auto-tiers: bench once → high (640/every frame) / med (480) / low
-(320 + infer every 2nd-3rd frame, adapts via `dropped` in `logs/app.log`).
-`.onnx` runs on DirectML GPU when present, else CPU — no CUDA Toolkit needed.
-
-Notes:
-
-- Camera must be reachable from container network. `192.168.x.x` works when Docker uses bridge/NAT on same LAN. No `localhost` camera URLs.
-- Headless test (no display) via YOLO CLI:
-
-```
-docker run --rm poc-monitor yolo predict model=yolov8n.pt source="rtsp://admin:QUSVQW@192.168.1.3:554/ch1/main"
-```
-
----
-
-See [PLAN.md](PLAN.md) for future improvements + status.
+| Problem | Fix |
+|---|---|
+| `Camera not found` | Close other apps using the webcam, or try `VideoCapture(1)` |
+| IP camera does not open | Test the RTSP address in VLC first; check user, password and network |
+| Slow detection | Use a smaller image (`imgsz=480`) or run on a machine with a GPU |
+| `connection refused` in Module 5 | Start the database first: `docker compose up -d` |
