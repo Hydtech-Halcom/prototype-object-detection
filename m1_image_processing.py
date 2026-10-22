@@ -11,7 +11,7 @@ while True:
     if not ok:
         break
     fps = 1 / (time.time() - prev); prev = time.time()           # frames per second
-    small = cv2.resize(frame, (640, 360))                        # resize
+    small = cv2.resize(frame, (320, 240))                        # resize
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)               # grayscale
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)                 # HSV color space
     blur = cv2.GaussianBlur(gray, (5, 5), 0)                     # blur removes noise
