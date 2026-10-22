@@ -23,6 +23,7 @@ instead, change the camera source to an RTSP address, for example
 | 5 | `m5_save_events.py` | Saves detections to PostgreSQL once per second |
 | 5 | `docker-compose.yml` | PostgreSQL + Grafana, restart 24/7 |
 | – | `yolo11n.pt` | Pretrained YOLO model (80 everyday classes), used until you have `best.pt` |
+| – | `requirements.txt` | Python libraries for all modules |
 
 ---
 
@@ -36,11 +37,41 @@ instead, change the camera source to an RTSP address, for example
 **Software:** Visual Studio Code, Git, Python 3.11, Docker Desktop, PostgreSQL, DBeaver,
 latest Chrome or Edge.
 
-**Python libraries:**
+### Set up the Python environment
+
+Open a terminal in this folder (VS Code: Terminal → New Terminal) and create a virtual
+environment, so the libraries stay inside the project:
 
 ```
-pip install ultralytics opencv-python "psycopg[binary]"
+python -m venv .venv
 ```
+
+Activate it (do this every time you open a new terminal):
+
+```
+# Windows (PowerShell)
+.venv\Scripts\activate
+
+# Windows (Command Prompt)
+.venv\Scripts\activate.bat
+
+# Linux / macOS
+source .venv/bin/activate
+```
+
+The prompt now starts with `(.venv)`. Install the libraries from `requirements.txt`:
+
+```
+pip install -r requirements.txt
+```
+
+`requirements.txt` contains `ultralytics` (YOLO), `opencv-python` (camera and windows)
+and `psycopg[binary]` (PostgreSQL, Module 5).
+
+> PowerShell says *running scripts is disabled*? Run once:
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then activate again.
+>
+> In VS Code, choose the interpreter `.venv` (Ctrl+Shift+P → *Python: Select Interpreter*).
 
 Each program opens a window. Press **Q** to close it.
 
@@ -136,7 +167,7 @@ the newest frame (frame skipping), and send all frames to the GPU in one batch
 
 ---
 
-## Module 5 — Database, Dashboard & Production Deployment (1 day)
+## Module 5 — Database, Dashboard & Production Deployment (2 days)
 
 ### 1. Start PostgreSQL and Grafana
 
@@ -187,7 +218,7 @@ In production the AI engine runs as a third Docker container on the RTX workstat
 
 | Phase | Scope | Duration |
 |---|---|---|
-| 1 — Proof of Concept | One camera, one object model | 2–4 weeks |
+| 1 — Initial Trial | One camera, one object model | 2–4 weeks |
 | 2 — Pilot Project | Two cameras, object + behavioral detection | 4–6 weeks |
 | 3 — Production Rollout | Four cameras 24/7, Grafana, database logging, alarms | 6–8 weeks |
 
@@ -210,3 +241,4 @@ In production the AI engine runs as a third Docker container on the RTX workstat
 | IP camera does not open | Test the RTSP address in VLC first; check user, password and network |
 | Slow detection | Use a smaller image (`imgsz=480`) or run on a machine with a GPU |
 | `connection refused` in Module 5 | Start the database first: `docker compose up -d` |
+| `ModuleNotFoundError: No module named 'cv2'` | The `.venv` is not active: activate it, then `pip install -r requirements.txt` |
