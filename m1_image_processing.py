@@ -18,8 +18,10 @@ while True:
     _, thresh = cv2.threshold(blur, 120, 255, cv2.THRESH_BINARY) # threshold: black / white
     edges = cv2.Canny(blur, 50, 150)                             # Canny edge detection
     cv2.putText(small, f"FPS: {fps:.0f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    for name, img in [("Original", small), ("HSV", hsv), ("Threshold", thresh), ("Edges", edges)]:
-        cv2.imshow(name, img)
+    thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)                 # 1 channel -> 3 channels
+    edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    grid = cv2.vconcat([cv2.hconcat([small, hsv]), cv2.hconcat([thresh_bgr, edges_bgr])])
+    cv2.imshow("Image Processing", grid)                                  # one window, 2x2
     key = cv2.waitKey(1) & 0xFF
     if key == ord("s"):
         cv2.imwrite("snapshot_roi.jpg", small[90:270, 160:480])  # crop region of interest
